@@ -1,0 +1,16 @@
+{
+  "title": "Wii VC H63 - Three-Point + Controller + Performance",
+  "revision": "Rev 2 (US)",
+  "console": "Wii VC",
+  "command": "Patch VC",
+  "vc_emulator_patch": "AppFile01\\oot-vc-usa-h63.ips",
+  "vc_emulator_hash": "763D4D3D0713E4D10E44540CCFA3255E19F28AF7",
+  "vc_emulator_output_hash": "149CE67AE3FD25D80820E11C7EB4EB1886BE66CE",
+  "vc_emulator_only": 1,
+  "remove_t64": -1,
+  "expand_memory": -1,
+  "remove_filter": -1,
+  "remap_controls": -1,
+  "output": "oot_vc_h63_threepoint_controller_performance",
+  "tooltip": "Patches only the original North American OoT Wii VC emulator.{0}Adds sharp live-GX three-point filtering, Test 10, ESS analog V3.3, GameCube/Wii rumble, corrected C3 batching, lazy depth conversion, and demand-armed depth snapshots.{0}Requires the clean NACE USA Wii VC WAD; the embedded N64 ROM is not independently modified."
+}
