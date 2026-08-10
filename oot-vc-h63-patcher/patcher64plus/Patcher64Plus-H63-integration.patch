@@ -1,0 +1,128 @@
+--- a/Files/Scripts/Common.psm1
++++ b/Files/Scripts/Common.psm1
+@@ -155,6 +155,9 @@
+ #==============================================================================================================================================================================================
+ function CheckIfScriptOrPatchExists($Item) {
+     
++    if (IsSet $Item.vc_emulator_patch) {
++        if (!(TestFile ($GameFiles.base + "\" + $Item.vc_emulator_patch))) { return $False }
++    }
+     if (IsSet $Item.patch) {
+         if (!(TestFile ($GameFiles.base + "\" + $item.patch))) { return $False }
+     }
+--- a/Files/Scripts/Patch.psm1
++++ b/Files/Scripts/Patch.psm1
+@@ -30,12 +30,23 @@
+     if (!(IsSet $PatchedFileName))   { $PatchedFileName = "_patched" }
+     else                             { $PatchedFileName = "_" + $PatchedFileName + "_patched" }
+     
+-    # Expand Memory, Remap Controls
++    # Virtual Console per-patch options
++    if     ($VC.RemoveT64.Active     -and $GamePatch.remove_t64      -eq  1)    { $VC.RemoveT64.Checked     = $True  }
++    elseif ($VC.RemoveT64.Active     -and $GamePatch.remove_t64      -eq -1)    { $VC.RemoveT64.Checked     = $False }
+     if     ($VC.ExpandMemory.Active  -and $GamePatch.expand_memory  -eq  1)    { $VC.ExpandMemory.Checked  = $True  }
+     elseif ($VC.ExpandMemory.Active  -and $GamePatch.expand_memory  -eq -1)    { $VC.ExpandMemory.Checked  = $False }
++    if     ($VC.RemoveFilter.Active  -and $GamePatch.remove_filter  -eq  1)    { $VC.RemoveFilter.Checked  = $True  }
++    elseif ($VC.RemoveFilter.Active  -and $GamePatch.remove_filter  -eq -1)    { $VC.RemoveFilter.Checked  = $False }
+     if     ($VC.RemapControls.Active -and $GamePatch.remap_controls -eq  1)    { $VC.RemapControls.Checked = $True  }
+     elseif ($VC.RemapControls.Active -and $GamePatch.remap_controls -eq -1)    { $VC.RemapControls.Checked = $False }
+ 
++    # Emulator-only entries must not silently modify the embedded N64 ROM.
++    if ($GamePatch.vc_emulator_only -eq 1) {
++        $Patches.Options.Checked = $False
++        $Patches.Redux.Checked   = $False
++        $Patches.Extend.Checked  = $False
++    }
++
+     if ( !(StrLike -str $Command -val "Inject") -and !(StrLike -str $Command -val "Apply Patch") -and !(StrLike -str $Command -val "Extract") ) {
+         if ( ( (IsChecked $Patches.Redux) -or (IsSet $GamePatch.preset) ) -and ( (IsSet $GamePatch.redux) -or (IsSet $GamePatch.reborn) ) ) { # Redux
+             if (IsSet $GamePatch.redux) {
+@@ -115,6 +126,8 @@
+     # Check if ROM is getting patched
+     if ( (IsChecked $Patches.Options) -or (IsChecked $Patches.Redux) -or (IsSet $GamePatch.patch) -or (StrLike -str $Command -val "Apply Patch") -or (IsSet $GamePatch.preset) -or (IsSet $GamePatch.function) -or (DoAssertSceneFiles) -or (IsChecked $CustomHeader.EnableHeader) ) { $PatchInfo.run = $True } else { $PatchInfo.run = $False }
+ 
++    if ($GamePatch.vc_emulator_only -eq 1) { $PatchInfo.run = $False }
++
+     # Refresh game options script
+     RefreshGameScript
+ 
+--- a/Files/Scripts/VC.psm1
++++ b/Files/Scripts/VC.psm1
+@@ -168,7 +168,7 @@
+     # Applying LZSS decompression
+     $array = [IO.File]::ReadAllBytes($WADFile.AppFile01)
+     if ($array[0] -eq (GetDecimal "10") -and (Get-Item $WADFile.AppFile01).length/1MB -lt 1) {
+-        if ( (StrLike -Str $Command -Val "Patch Boot DOL") -or (IsChecked $VC.ExpandMemory) -or (IsChecked $VC.RemoveFilter) -or (IsChecked $VC.RemapControls) ) {
++        if ( (StrLike -Str $Command -Val "Patch Boot DOL") -or (IsSet $GamePatch.vc_emulator_patch) -or (IsChecked $VC.ExpandMemory) -or (IsChecked $VC.RemoveFilter) -or (IsChecked $VC.RemapControls) ) {
+             $script = { Param([string]$Tool, [string]$File)
+                 & $Tool -d $File | Out-Null
+             }
+@@ -180,6 +180,42 @@
+         }
+     }
+ 
++    # Dedicated VC emulator patch. Independent of embedded-ROM patching.
++    # Validate both the clean input and patched output when hashes are supplied.
++    if (IsSet $GamePatch.vc_emulator_patch) {
++        $Patch = $GameFiles.base + "\" + $GamePatch.vc_emulator_patch
++        if (!(TestFile $Patch)) {
++            UpdateStatusLabel "Failed! Could not find the VC emulator patch." -Error
++            WriteToConsole ("Missing VC emulator patch: " + $Patch) -Error
++            return $False
++        }
++
++        if (IsSet $GamePatch.vc_emulator_hash) {
++            $CurrentHash  = (Get-FileHash -Algorithm SHA1 -LiteralPath $WADFile.AppFile01).Hash.ToUpper()
++            $AllowedHashes = @($GamePatch.vc_emulator_hash | ForEach-Object { ([string]$_).ToUpper() })
++            if ($AllowedHashes -notcontains $CurrentHash) {
++                UpdateStatusLabel "Failed! This VC emulator is not the supported clean USA version." -Error
++                WriteToConsole ("VC emulator SHA-1 mismatch: " + $CurrentHash) -Error
++                WriteToConsole ("Expected SHA-1: " + ($AllowedHashes -join ", ")) -Error
++                return $False
++            }
++        }
++
++        if (!(ApplyPatch -File $WADFile.AppFile01 -Patch $Patch -FullPath)) { return $False }
++
++        if (IsSet $GamePatch.vc_emulator_output_hash) {
++            $OutputHash = (Get-FileHash -Algorithm SHA1 -LiteralPath $WADFile.AppFile01).Hash.ToUpper()
++            if ($OutputHash -ne ([string]$GamePatch.vc_emulator_output_hash).ToUpper()) {
++                UpdateStatusLabel "Failed! VC emulator patch output did not verify." -Error
++                WriteToConsole ("Patched VC emulator SHA-1: " + $OutputHash) -Error
++                WriteToConsole ("Expected output SHA-1: " + $GamePatch.vc_emulator_output_hash) -Error
++                return $False
++            }
++        }
++
++        WriteToConsole ("Applied verified VC emulator patch: " + $Patch)
++    }
++
+     # Patching Boot DOL
+     if ( (StrLike -Str $Command -Val "Patch Boot DOL") -and (IsSet $GamePatch.patch) ) {
+         $Patch = "\AppFile01\" + [System.IO.Path]::GetFileNameWithoutExtension($GamePatch.patch)
+--- a/Files/Games/Ocarina of Time/Patches.json
++++ b/Files/Games/Ocarina of Time/Patches.json
+@@ -229,6 +229,23 @@
+ 
+ }, {
+ 
++	"title"				: "Wii VC H63 - Three-Point + Controller + Performance",
++	"revision"			: "Rev 2 (US)",
++	"console"			: "Wii VC",
++	"command"			: "Patch VC",
++	"vc_emulator_patch"		: "AppFile01\\oot-vc-usa-h63.ips",
++	"vc_emulator_hash"		: "763D4D3D0713E4D10E44540CCFA3255E19F28AF7",
++	"vc_emulator_output_hash"	: "149CE67AE3FD25D80820E11C7EB4EB1886BE66CE",
++	"vc_emulator_only"		: 1,
++	"remove_t64"			: -1,
++	"expand_memory"			: -1,
++	"remove_filter"			: -1,
++	"remap_controls"		: -1,
++	"output"			: "oot_vc_h63_threepoint_controller_performance",
++	"tooltip"			: "Patches only the original North American OoT Wii VC emulator.{0}Adds sharp live-GX three-point filtering, Test 10, ESS analog V3.3, GameCube/Wii rumble, corrected C3 batching, lazy depth conversion, and demand-armed depth snapshots.{0}Requires the clean NACE USA Wii VC WAD; the embedded N64 ROM is not independently modified."
++
++}, {
++
+ 	"title"				: "Widescreen",
+ 	"revision"			: "Rev 2 (US)",
+ 	"patch"				: "Decompressed\\widescreen.bps",
