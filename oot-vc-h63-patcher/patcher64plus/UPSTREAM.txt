@@ -1,0 +1,4 @@
+Repository: https://github.com/Admentus64/Patcher64Plus-Tool
+Validated source lookup commit: 848109a4ffe727acfaf00f617507a4b3379c3841
+
+Run `git apply --check Patcher64Plus-H63-integration.patch` before applying to a different upstream revision.
