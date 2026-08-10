@@ -1,0 +1,12 @@
+*.wad
+*.app
+*.dol
+*.elf
+*.bin
+*.key
+__pycache__/
+.pyinstaller-work/
+.pyinstaller-spec/
+dist/
+build/
+private/
