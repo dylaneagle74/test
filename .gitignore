@@ -1,0 +1,9 @@
+*.wad
+*.app
+*.bin
+*.elf
+*.dol
+__pycache__/
+build/
+dist/
+*.spec
