@@ -1,16 +1,16 @@
 # OoT Wii VC H63 GUI Patcher
 
-This branch is a clean standalone snapshot. It contains only the GUI patcher and the WAD patching code required to apply the H63 emulator patch to the exact original North American Ocarina of Time Wii Virtual Console WAD (`NACE`).
+This branch is a clean standalone snapshot containing only the GUI patcher and the WAD patching code required to apply the H63 emulator patch to the exact original North American Ocarina of Time Wii Virtual Console WAD (`NACE`).
 
-It intentionally does **not** contain `tp_main`, Patcher64+, old hardware tests, historical pass files, ROMs, WADs, decrypted APPs, or other unrelated project files.
+It intentionally does **not** contain `tp_main`, Patcher64+, old hardware tests, historical pass files, ROMs, WADs, decrypted APPs, or unrelated project files.
 
 ## Files
 
-- `OoTVCFixPatcher.py` — GUI patcher
-- `wad_tools.py` — WAD decrypt/repack support used by the GUI
-- `requirements.txt` — Python dependencies
-- `Build EXE.bat` — builds a single Windows executable with PyInstaller
-- `patches/oot-vc-usa-h63.ips` — generated H63 content1 delta for public distribution
+- `OoTVCFixPatcher.py` — standalone GUI patcher and one-time payload generator
+- `wad_tools.py` — WAD decrypt/repack support
+- `requirements.txt` — Python/PyInstaller dependencies
+- `Build EXE.bat` — one-click Windows release builder
+- `patches/oot-vc-usa-h63.ips` — generated H63 `content1.app` delta bundled into the public EXE
 
 ## Supported clean WAD
 
@@ -22,21 +22,42 @@ Expected H63 output:
 - H63 `content1.app` SHA-1: `149ce67ae3fd25d80820e11c7eb4eb1886be66ce`
 - H63 WAD SHA-256: `de70a0d822bfc822c8f0f29fc3ef185a2a5bd63cefc958d7b6b075e579e806e9`
 
-## First-time maintainer setup
+## Build the public EXE
 
-Because this source snapshot does not distribute Nintendo game data, the patch payload is generated once from your private clean WAD and the private H63 reference WAD:
+Double-click:
 
-1. `py -m pip install -r requirements.txt`
-2. Run `py OoTVCFixPatcher.py`
-3. Open **Maintainer -> Build H63 patch payload**.
-4. Select the exact clean NACE WAD and the H63 reference WAD.
-5. The GUI generates `patches/oot-vc-usa-h63.ips` only after proving that applying it recreates the H63 `content1.app` byte-for-byte.
+```text
+Build EXE.bat
+```
 
-After that, the folder can be built into the public EXE with `Build EXE.bat`. End users only select their own clean WAD and click **PATCH WAD**.
+On the first build only, if `patches/oot-vc-usa-h63.ips` does not exist, the builder automatically opens two file pickers:
+
+1. select the exact original USA/NACE OoT VC WAD;
+2. select the tested H63 reference WAD.
+
+The payload generator then:
+
+1. verifies the clean WAD SHA-256;
+2. verifies the H63 WAD SHA-256;
+3. extracts both `content1.app` files;
+4. verifies both APP SHA-1 values;
+5. generates the clean-NACE -> H63 IPS delta;
+6. reapplies that IPS to the clean APP;
+7. requires the result to match the H63 APP byte-for-byte.
+
+If every check passes, `Build EXE.bat` continues automatically and creates:
+
+```text
+dist\OoTVCFixPatcher-H63.exe
+```
+
+The private clean/H63 WADs are never embedded in the EXE. Only the generated IPS delta is bundled.
 
 ## End-user flow
 
-The GUI performs:
+End users run `OoTVCFixPatcher-H63.exe`, select their own exact clean USA/NACE WAD, and choose an output WAD.
+
+The patcher performs:
 
 1. clean WAD SHA-256 validation;
 2. WAD extraction;
