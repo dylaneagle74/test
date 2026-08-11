@@ -9,6 +9,9 @@ from Crypto.Cipher import AES
 
 ALIGNMENT = 0x40
 AES_BLOCK = 0x10
+# The stock NACE/H63 WAD lineage uses 0x2D for outer WAD alignment bytes.
+# This is outside AES-encrypted content; plaintext AES padding remains zero.
+WAD_FILL_BYTE = 0x2D
 WII_COMMON_KEY = bytes.fromhex("ebe42a225e8593e448d9c5457381aaf7")
 NACE_TITLE_ID = bytes.fromhex("000100014e414345")
 SIGNED_BLOB_TYPES = {0x00010000, 0x00010001, 0x00010002}
@@ -163,14 +166,12 @@ def _ticket_title_key(ticket: bytes) -> bytes:
             f"({NACE_TITLE_ID.hex()}), found {title_id.hex()}"
         )
 
-    # Official tickets normally store common-key index 0 at 0x1F1.  Some
+    # Official tickets normally store common-key index 0 at 0x1F1. Some
     # scene-repacked Wii WADs leave junk in this field while still encrypting the
-    # title key with the standard Wii common key.  The exact supported NACE WAD
-    # used by this patcher is one of those (0xCD).  Match established Wii WAD
-    # tooling: for a non-Korean NACE ticket, use the standard common key and let
-    # the mandatory TMD SHA-1 verification of every decrypted content prove that
-    # the resulting title key is correct.  Unknown WADs are rejected by the GUI's
-    # full-file SHA-256 check before reaching this code.
+    # title key with the standard Wii common key. The exact supported NACE WAD
+    # used by this patcher is one of those (0xCD). The full-file input SHA-256
+    # gate plus mandatory TMD SHA-1 verification of every decrypted content keeps
+    # this fallback constrained to the known supported image.
     common_key_index = ticket[0x1F1]
     if common_key_index not in (0, 0xCD):
         raise ValueError(
@@ -237,11 +238,17 @@ def extract(wad_path: Path | str, outdir: Path | str):
     return contents
 
 
-def _append_aligned(out: bytearray, payload: bytes, boundary: int = ALIGNMENT):
+def _append_aligned(
+    out: bytearray,
+    payload: bytes,
+    boundary: int = ALIGNMENT,
+    fill_byte: int = WAD_FILL_BYTE,
+):
+    """Append a raw WAD section and match the H63 outer alignment fill."""
     out.extend(payload)
     pad = (-len(out)) & (boundary - 1)
     if pad:
-        out.extend(b"\0" * pad)
+        out.extend(bytes([fill_byte]) * pad)
 
 
 def repack(
@@ -269,6 +276,8 @@ def repack(
         struct.pack_into(">Q", tmd, record_off + 8, new_size)
         tmd[record_off + 0x10 : record_off + 0x24] = new_sha
 
+        # AES plaintext padding is zero as required. Only the OUTER WAD's
+        # 0x40-byte alignment gaps use WAD_FILL_BYTE (0x2D).
         padded_size = align(new_size, AES_BLOCK)
         padded = plain + (b"\0" * (padded_size - new_size))
         iv = index.to_bytes(2, "big") + (b"\0" * 14)
@@ -280,6 +289,8 @@ def repack(
     if len(tmd) != tmd_size:
         raise ValueError("Unexpected TMD size change")
 
+    # Preserve the stock WAD prefix byte-for-byte, including its original
+    # certificate/ticket/TMD alignment. Only fields that must change are edited.
     prefix = bytearray(blob[:data_off])
     struct.pack_into(">I", prefix, 0x14, len(tmd))
     struct.pack_into(">I", prefix, 0x18, len(encrypted_data))
@@ -292,7 +303,7 @@ def repack(
     out.extend(encrypted_data)
     pad = (-len(out)) & (ALIGNMENT - 1)
     if pad:
-        out.extend(b"\0" * pad)
+        out.extend(bytes([WAD_FILL_BYTE]) * pad)
     out.extend(footer)
 
     output_wad.parent.mkdir(parents=True, exist_ok=True)
