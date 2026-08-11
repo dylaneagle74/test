@@ -57,13 +57,7 @@ def _locate_signed_title_section(
     title_id_offset: int,
     label: str,
 ) -> int:
-    """Locate a signed ticket/TMD section and reject accidental header misalignment.
-
-    The exact clean NACE WAD is enforced by the GUI before this code is called, but
-    keeping a title-ID/signature check here makes failures deterministic and avoids
-    treating arbitrary bytes as a ticket (which was the cause of the old key-index
-    205 error).
-    """
+    """Locate a signed ticket/TMD section and reject accidental header misalignment."""
     if _looks_like_signed_title_section(blob, expected_offset, size, title_id_offset):
         return expected_offset
 
@@ -106,9 +100,6 @@ def parse_wad(blob: bytes):
     if reserved != 0:
         raise ValueError(f"Unsupported nonzero WAD reserved field: 0x{reserved:X}")
 
-    # Installable WAD order is header -> certificate chain -> ticket -> TMD -> data -> footer.
-    # Every section begins on a 0x40-byte boundary. 0x0C in the header is reserved;
-    # it is not a CRL-size field.
     cert_off = align(header_size)
     expected_ticket_off = align(cert_off + cert_size)
     ticket_off = _locate_signed_title_section(
@@ -172,11 +163,18 @@ def _ticket_title_key(ticket: bytes) -> bytes:
             f"({NACE_TITLE_ID.hex()}), found {title_id.hex()}"
         )
 
+    # Official tickets normally store common-key index 0 at 0x1F1.  Some
+    # scene-repacked Wii WADs leave junk in this field while still encrypting the
+    # title key with the standard Wii common key.  The exact supported NACE WAD
+    # used by this patcher is one of those (0xCD).  Match established Wii WAD
+    # tooling: for a non-Korean NACE ticket, use the standard common key and let
+    # the mandatory TMD SHA-1 verification of every decrypted content prove that
+    # the resulting title key is correct.  Unknown WADs are rejected by the GUI's
+    # full-file SHA-256 check before reaching this code.
     common_key_index = ticket[0x1F1]
-    if common_key_index != 0:
+    if common_key_index not in (0, 0xCD):
         raise ValueError(
-            f"Unsupported Wii common-key index: {common_key_index} "
-            "(the supported USA/NACE ticket must use common key index 0)"
+            f"Unsupported NACE ticket common-key marker: 0x{common_key_index:02X}"
         )
 
     encrypted_title_key = ticket[0x1BF:0x1CF]
@@ -277,8 +275,6 @@ def repack(
         encrypted = AES.new(title_key, AES.MODE_CBC, iv).encrypt(padded)
         _append_aligned(encrypted_data, encrypted)
 
-    # Preserve the original header/certificate/ticket/TMD padding bytes verbatim.
-    # Only the header data-size field and the TMD content records need to change.
     data_off, _old_data_size = sec["data"]
     tmd_off, tmd_size = sec["tmd"]
     if len(tmd) != tmd_size:
