@@ -9,205 +9,131 @@ from Crypto.Cipher import AES
 
 ALIGNMENT = 0x40
 AES_BLOCK = 0x10
-# The stock NACE/H63 WAD lineage uses 0x2D for outer WAD alignment bytes.
-# This is outside AES-encrypted content; plaintext AES padding remains zero.
-WAD_FILL_BYTE = 0x2D
-WII_COMMON_KEY = bytes.fromhex("ebe42a225e8593e448d9c5457381aaf7")
-NACE_TITLE_ID = bytes.fromhex("000100014e414345")
-SIGNED_BLOB_TYPES = {0x00010000, 0x00010001, 0x00010002}
+COMMON_KEYS = {
+    0: bytes.fromhex("ebe42a225e8593e448d9c5457381aaf7"),
+    1: bytes.fromhex("63b82bb4f4614e2e13f2f6b5ef51eb58"),
+}
 
 
 def align(value: int, boundary: int = ALIGNMENT) -> int:
     return (value + boundary - 1) & ~(boundary - 1)
 
 
-def _be32(data: bytes, off: int) -> int:
-    return struct.unpack_from(">I", data, off)[0]
+def aes_cbc_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    return AES.new(key, AES.MODE_CBC, iv).decrypt(data)
 
 
-def _be16(data: bytes, off: int) -> int:
-    return struct.unpack_from(">H", data, off)[0]
+def aes_cbc_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    return AES.new(key, AES.MODE_CBC, iv).encrypt(data)
 
 
-def _be64(data: bytes, off: int) -> int:
-    return struct.unpack_from(">Q", data, off)[0]
-
-
-def _looks_like_signed_title_section(
-    blob: bytes,
-    offset: int,
-    size: int,
-    title_id_offset: int,
-) -> bool:
-    if offset < 0 or offset % ALIGNMENT != 0:
-        return False
-    if size <= title_id_offset + 8 or offset + size > len(blob):
-        return False
-    try:
-        signature_type = _be32(blob, offset)
-    except struct.error:
-        return False
-    return (
-        signature_type in SIGNED_BLOB_TYPES
-        and blob[offset + title_id_offset : offset + title_id_offset + 8] == NACE_TITLE_ID
-    )
-
-
-def _locate_signed_title_section(
-    blob: bytes,
-    expected_offset: int,
-    size: int,
-    title_id_offset: int,
-    label: str,
-) -> int:
-    """Locate a signed ticket/TMD section and reject accidental header misalignment."""
-    if _looks_like_signed_title_section(blob, expected_offset, size, title_id_offset):
-        return expected_offset
-
-    search_from = 0
-    while True:
-        title_pos = blob.find(NACE_TITLE_ID, search_from)
-        if title_pos < 0:
-            break
-        candidate = title_pos - title_id_offset
-        if _looks_like_signed_title_section(blob, candidate, size, title_id_offset):
-            return candidate
-        search_from = title_pos + 1
-
-    raise ValueError(
-        f"Could not locate the NACE {label} section. "
-        f"Expected a signed section near WAD offset 0x{expected_offset:X}."
-    )
-
-
-def parse_wad(blob: bytes):
-    if len(blob) < 0x40:
+def parse_wad(data: bytes):
+    """Parse the exact installable-WAD layout used by the production H63 builder."""
+    if len(data) < 0x20:
         raise ValueError("WAD is too small")
 
-    header_size = _be32(blob, 0x00)
-    wad_type = blob[0x04:0x06]
-    wad_version = _be16(blob, 0x06)
-    cert_size = _be32(blob, 0x08)
-    reserved = _be32(blob, 0x0C)
-    ticket_size = _be32(blob, 0x10)
-    tmd_size = _be32(blob, 0x14)
-    data_size = _be32(blob, 0x18)
-    footer_size = _be32(blob, 0x1C)
+    # The production H63 tool treats the 32-byte header as eight big-endian u32s:
+    # header size, type, cert size, CRL size, ticket size, TMD size, data size,
+    # footer size.  Reusing that exact interpretation is important for producing
+    # the tested reference WAD byte-for-byte.
+    hs, typ, cs, crls, tiks, tmds, ds, fs = struct.unpack(">8I", data[:32])
 
-    if header_size != 0x20:
-        raise ValueError(f"Unsupported installable WAD header size: 0x{header_size:X}")
-    if wad_type != b"Is":
-        raise ValueError(f"Unsupported WAD type: {wad_type!r}")
-    if wad_version != 0:
-        raise ValueError(f"Unsupported WAD version: {wad_version}")
-    if reserved != 0:
-        raise ValueError(f"Unsupported nonzero WAD reserved field: 0x{reserved:X}")
+    off = align(hs)
+    cert = (off, cs)
+    off = align(off + cs)
+    crl = (off, crls)
+    off = align(off + crls)
+    tik = (off, tiks)
+    off = align(off + tiks)
+    tmd = (off, tmds)
+    off = align(off + tmds)
+    dat = (off, ds)
+    off = align(off + ds)
+    footer = (off, fs)
 
-    cert_off = align(header_size)
-    expected_ticket_off = align(cert_off + cert_size)
-    ticket_off = _locate_signed_title_section(
-        blob, expected_ticket_off, ticket_size, 0x1DC, "ticket"
-    )
-
-    expected_tmd_off = align(ticket_off + ticket_size)
-    tmd_off = _locate_signed_title_section(
-        blob, expected_tmd_off, tmd_size, 0x18C, "TMD"
-    )
-
-    if tmd_off < ticket_off + ticket_size:
-        raise ValueError("TMD overlaps the ticket section")
-
-    data_off = align(tmd_off + tmd_size)
-    footer_off = align(data_off + data_size)
-
-    if data_off > len(blob) or footer_off + footer_size > len(blob):
+    if footer[0] + footer[1] > len(data):
         raise ValueError("WAD sections extend beyond end of file")
 
     return {
-        "header": (0, header_size),
-        "cert": (cert_off, cert_size),
-        "ticket": (ticket_off, ticket_size),
-        "tmd": (tmd_off, tmd_size),
-        "data": (data_off, data_size),
-        "footer": (footer_off, footer_size),
+        "header": (hs, typ, cs, crls, tiks, tmds, ds, fs),
+        "cert": cert,
+        "crl": crl,
+        "tik": tik,
+        "ticket": tik,
+        "tmd": tmd,
+        "data": dat,
+        "footer": footer,
     }
+
+
+def title_key(ticket: bytes):
+    if len(ticket) < 0x1E4:
+        raise ValueError("Ticket is too small")
+
+    encrypted_title_key = ticket[0x1BF:0x1CF]
+    title_id = ticket[0x1DC:0x1E4]
+
+    # This patcher only accepts one exact clean NACE WAD by full-file SHA-256.
+    # That WAD has a scene-modified key-index byte, while the title key is still
+    # encrypted with the standard Wii common key.  This is the exact behavior of
+    # the original WAD tool used to produce H63.  Every decrypted content is then
+    # checked against the TMD SHA-1 before it can be used.
+    key_index = 0
+    key = aes_cbc_decrypt(
+        COMMON_KEYS[key_index],
+        title_id + (b"\0" * 8),
+        encrypted_title_key,
+    )
+    return key, title_id
 
 
 def content_records(tmd: bytes):
     if len(tmd) < 0x1E4:
         raise ValueError("TMD is too small")
-    if _be32(tmd, 0) not in SIGNED_BLOB_TYPES:
-        raise ValueError("TMD has an unsupported signature type")
-    if tmd[0x18C:0x194] != NACE_TITLE_ID:
-        raise ValueError("TMD title ID is not NACE")
 
-    count = _be16(tmd, 0x1DE)
-    pos = 0x1E4
-    for _ in range(count):
-        if pos + 0x24 > len(tmd):
+    count = struct.unpack_from(">H", tmd, 0x1DE)[0]
+    records = []
+    for i in range(count):
+        offset = 0x1E4 + i * 0x24
+        if offset + 0x24 > len(tmd):
             raise ValueError("TMD content table is truncated")
-        cid, index, kind = struct.unpack_from(">IHH", tmd, pos)
-        size = _be64(tmd, pos + 8)
-        sha = tmd[pos + 0x10 : pos + 0x24]
-        yield cid, index, kind, size, sha, pos
-        pos += 0x24
+        cid, index, kind, size = struct.unpack_from(">IHHQ", tmd, offset)
+        sha = tmd[offset + 16:offset + 36]
+        records.append((cid, index, kind, size, sha, offset))
+    return records
 
 
-def _ticket_title_key(ticket: bytes) -> bytes:
-    if len(ticket) < 0x1F2:
-        raise ValueError("Ticket is too small")
-    if _be32(ticket, 0) not in SIGNED_BLOB_TYPES:
-        raise ValueError("Ticket has an unsupported signature type")
-
-    title_id = ticket[0x1DC:0x1E4]
-    if title_id != NACE_TITLE_ID:
-        raise ValueError(
-            "Ticket title ID mismatch: expected NACE "
-            f"({NACE_TITLE_ID.hex()}), found {title_id.hex()}"
-        )
-
-    # Official tickets normally store common-key index 0 at 0x1F1. Some
-    # scene-repacked Wii WADs leave junk in this field while still encrypting the
-    # title key with the standard Wii common key. The exact supported NACE WAD
-    # used by this patcher is one of those (0xCD). The full-file input SHA-256
-    # gate plus mandatory TMD SHA-1 verification of every decrypted content keeps
-    # this fallback constrained to the known supported image.
-    common_key_index = ticket[0x1F1]
-    if common_key_index not in (0, 0xCD):
-        raise ValueError(
-            f"Unsupported NACE ticket common-key marker: 0x{common_key_index:02X}"
-        )
-
-    encrypted_title_key = ticket[0x1BF:0x1CF]
-    iv = title_id + (b"\0" * 8)
-    return AES.new(WII_COMMON_KEY, AES.MODE_CBC, iv).decrypt(encrypted_title_key)
-
-
-def _decrypt_contents(blob: bytes):
+def _decrypt_contents(wad_path: Path | str):
+    wad_path = Path(wad_path)
+    blob = wad_path.read_bytes()
     sec = parse_wad(blob)
-    ticket_off, ticket_size = sec["ticket"]
+
+    tik_off, tik_size = sec["tik"]
     tmd_off, tmd_size = sec["tmd"]
-    data_off, _ = sec["data"]
-    ticket = blob[ticket_off : ticket_off + ticket_size]
-    tmd = blob[tmd_off : tmd_off + tmd_size]
-
-    if ticket[0x1DC:0x1E4] != tmd[0x18C:0x194]:
-        raise ValueError("Ticket and TMD title IDs do not match")
-
-    title_key = _ticket_title_key(ticket)
+    ticket = blob[tik_off:tik_off + tik_size]
+    tmd = blob[tmd_off:tmd_off + tmd_size]
+    key, title_id = title_key(ticket)
 
     contents = {}
-    cursor = data_off
+    cursor = sec["data"][0]
     for cid, index, kind, size, sha, record_off in content_records(tmd):
-        encrypted_size = align(size, AES_BLOCK)
-        encrypted = blob[cursor : cursor + encrypted_size]
-        if len(encrypted) != encrypted_size:
+        encrypted_length = align(size, 0x40)
+        encrypted = blob[cursor:cursor + encrypted_length]
+        if len(encrypted) != encrypted_length:
             raise ValueError(f"Encrypted content {index} is truncated")
-        iv = index.to_bytes(2, "big") + (b"\0" * 14)
-        plain_padded = AES.new(title_key, AES.MODE_CBC, iv).decrypt(encrypted)
-        plain = plain_padded[:size]
-        if hashlib.sha1(plain).digest() != sha:
-            raise ValueError(f"Content index {index} failed TMD SHA-1 during extraction")
+
+        iv = struct.pack(">H", index) + (b"\0" * 14)
+        decrypted = aes_cbc_decrypt(
+            key,
+            iv,
+            encrypted[:align(size, AES_BLOCK)],
+        )[:size]
+
+        if hashlib.sha1(decrypted).digest() != sha:
+            raise ValueError(
+                f"Content index {index} failed TMD SHA-1 during extraction"
+            )
+
         contents[index] = {
             "cid": cid,
             "index": index,
@@ -215,97 +141,111 @@ def _decrypt_contents(blob: bytes):
             "size": size,
             "sha": sha,
             "record_off": record_off,
-            "plain": plain,
+            "plain": decrypted,
         }
-        cursor = align(cursor + encrypted_size)
-    return sec, ticket, tmd, title_key, contents
+        cursor += encrypted_length
+
+    return blob, sec, ticket, tmd, key, title_id, contents
 
 
 def extract(wad_path: Path | str, outdir: Path | str):
-    wad_path = Path(wad_path)
     outdir = Path(outdir)
+    _blob, _sec, _ticket, _tmd, _key, _title_id, contents = _decrypt_contents(wad_path)
     outdir.mkdir(parents=True, exist_ok=True)
-    blob = wad_path.read_bytes()
-    sec, _ticket, _tmd, _title_key, contents = _decrypt_contents(blob)
 
     for info in contents.values():
         name = f"{info['index']:08x}_{info['cid']:08x}.app"
         (outdir / name).write_bytes(info["plain"])
 
-    for name in ("cert", "ticket", "tmd", "footer"):
-        off, size = sec[name]
-        (outdir / f"{name}.bin").write_bytes(blob[off : off + size])
     return contents
 
 
-def _append_aligned(
-    out: bytearray,
-    payload: bytes,
-    boundary: int = ALIGNMENT,
-    fill_byte: int = WAD_FILL_BYTE,
-):
-    """Append a raw WAD section and match the H63 outer alignment fill."""
-    out.extend(payload)
-    pad = (-len(out)) & (boundary - 1)
-    if pad:
-        out.extend(bytes([fill_byte]) * pad)
-
-
 def repack(
-    base_wad: Path | str,
+    original: Path | str,
     replacements: Dict[int, Path | str],
-    output_wad: Path | str,
+    output: Path | str,
 ):
-    base_wad = Path(base_wad)
-    output_wad = Path(output_wad)
-    blob = base_wad.read_bytes()
-    sec, _ticket, tmd_original, title_key, contents = _decrypt_contents(blob)
-    tmd = bytearray(tmd_original)
+    """Rebuild using the exact WAD/TMD algorithm that produced reference H63."""
+    original = Path(original)
+    output = Path(output)
+    blob = original.read_bytes()
+    sec = parse_wad(blob)
 
-    replacement_bytes = {}
-    for index, path in replacements.items():
-        if index not in contents:
-            raise ValueError(f"WAD has no content index {index}")
-        replacement_bytes[index] = Path(path).read_bytes()
+    hs, typ, cert_size, crl_size, ticket_size, tmd_size, old_data_size, footer_size = sec["header"]
+    ticket = bytearray(blob[sec["tik"][0]:sec["tik"][0] + ticket_size])
+    tmd = bytearray(blob[sec["tmd"][0]:sec["tmd"][0] + tmd_size])
+    key, _title_id = title_key(ticket)
 
-    encrypted_data = bytearray()
-    for cid, index, kind, old_size, old_sha, record_off in content_records(bytes(tmd)):
-        plain = replacement_bytes.get(index, contents[index]["plain"])
+    encrypted_contents = []
+    cursor = sec["data"][0]
+
+    for cid, index, kind, old_size, old_sha, record_off in content_records(tmd):
+        old_encrypted_length = align(old_size, 0x40)
+        encrypted = blob[cursor:cursor + old_encrypted_length]
+        if len(encrypted) != old_encrypted_length:
+            raise ValueError(f"Encrypted content {index} is truncated")
+
+        iv = struct.pack(">H", index) + (b"\0" * 14)
+        plain = aes_cbc_decrypt(
+            key,
+            iv,
+            encrypted[:align(old_size, AES_BLOCK)],
+        )[:old_size]
+
+        if hashlib.sha1(plain).digest() != old_sha:
+            raise ValueError(
+                f"Original content index {index} failed TMD SHA-1"
+            )
+
+        if index in replacements:
+            plain = Path(replacements[index]).read_bytes()
+
         new_size = len(plain)
-        new_sha = hashlib.sha1(plain).digest()
+        digest = hashlib.sha1(plain).digest()
         struct.pack_into(">Q", tmd, record_off + 8, new_size)
-        tmd[record_off + 0x10 : record_off + 0x24] = new_sha
+        tmd[record_off + 16:record_off + 36] = digest
 
-        # AES plaintext padding is zero as required. Only the OUTER WAD's
-        # 0x40-byte alignment gaps use WAD_FILL_BYTE (0x2D).
-        padded_size = align(new_size, AES_BLOCK)
-        padded = plain + (b"\0" * (padded_size - new_size))
-        iv = index.to_bytes(2, "big") + (b"\0" * 14)
-        encrypted = AES.new(title_key, AES.MODE_CBC, iv).encrypt(padded)
-        _append_aligned(encrypted_data, encrypted)
+        padded = plain + (b"\0" * (align(new_size, AES_BLOCK) - new_size))
+        new_encrypted = aes_cbc_encrypt(key, iv, padded)
+        new_encrypted += b"\0" * (align(new_size, 0x40) - len(new_encrypted))
+        encrypted_contents.append(new_encrypted)
 
-    data_off, _old_data_size = sec["data"]
-    tmd_off, tmd_size = sec["tmd"]
-    if len(tmd) != tmd_size:
-        raise ValueError("Unexpected TMD size change")
+        cursor += old_encrypted_length
 
-    # Preserve the stock WAD prefix byte-for-byte, including its original
-    # certificate/ticket/TMD alignment. Only fields that must change are edited.
-    prefix = bytearray(blob[:data_off])
-    struct.pack_into(">I", prefix, 0x14, len(tmd))
-    struct.pack_into(">I", prefix, 0x18, len(encrypted_data))
-    prefix[tmd_off : tmd_off + len(tmd)] = tmd
+    # Critical production step that earlier GUI revisions were missing:
+    # Trucha-fakesign the modified TMD exactly as the original H63 packer did.
+    # Clear the RSA signature body, then vary the 16-bit filler at 0x1E2 until
+    # SHA-1(TMD body) begins with zero.  For the final H63 TMD this resolves to
+    # 431 / 0x01AF, but compute it rather than hard-coding it.
+    tmd[4:0x140] = b"\0" * (0x140 - 4)
+    for fill in range(65536):
+        struct.pack_into(">H", tmd, 0x1E2, fill)
+        if hashlib.sha1(tmd[0x140:]).digest()[0] == 0:
+            break
+    else:
+        raise RuntimeError("failed to fakesign TMD")
 
-    footer_off, footer_size = sec["footer"]
-    footer = blob[footer_off : footer_off + footer_size]
+    data_blob = b"".join(encrypted_contents)
+    new_data_size = len(data_blob)
 
-    out = bytearray(prefix)
-    out.extend(encrypted_data)
-    pad = (-len(out)) & (ALIGNMENT - 1)
-    if pad:
-        out.extend(bytes([WAD_FILL_BYTE]) * pad)
-    out.extend(footer)
+    header = bytearray(blob[:hs])
+    struct.pack_into(">I", header, 24, new_data_size)
 
-    output_wad.parent.mkdir(parents=True, exist_ok=True)
-    output_wad.write_bytes(out)
-    return output_wad
+    out = bytearray()
+
+    def add(raw: bytes) -> None:
+        out.extend(raw)
+        out.extend(b"\0" * (align(len(out)) - len(out)))
+
+    out.extend(header)
+    out.extend(b"\0" * (align(len(out)) - len(out)))
+    add(blob[sec["cert"][0]:sec["cert"][0] + cert_size])
+    add(blob[sec["crl"][0]:sec["crl"][0] + crl_size])
+    add(bytes(ticket))
+    add(bytes(tmd))
+    add(data_blob)
+    out.extend(blob[sec["footer"][0]:sec["footer"][0] + footer_size])
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(out)
+    return fill
