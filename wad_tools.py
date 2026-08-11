@@ -142,7 +142,7 @@ def repack(original: Path | str, replacements: Dict[int, Path | str], output: Pa
         contents.append(encrypted)
         pos += old_enc_len
 
-    # Match the exact production H63 packer: Trucha-fakesign the modified TMD.
+    # Match the exact production H64 packer: Trucha-fakesign the modified TMD.
     # Clear the RSA signature bytes and brute-force the 16-bit filler field until
     # SHA-1(TMD body) begins with 0x00.
     tmd[4:0x140] = b'\0' * (0x140 - 4)

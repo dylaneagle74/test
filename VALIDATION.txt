@@ -1,31 +1,39 @@
-OoTVCFixPatcher H63 final embedded-IPS validation
-=================================================
+OoTVCFixPatcher H64 embedded-IPS validation
+===========================================
 
 Input clean NACE WAD SHA-256:
 6926561f8e7ed8a58f0433f577f4b3f2136a0c3e719cd97f838ae6f1202ec6e6
 
-Embedded IPS SHA-256:
-8941c141112ae8d14d9824a0f0c5bcbea0725f70883d026ef13cbc895399d2ef
+Clean content1.app SHA-1:
+763d4d3d0713e4d10e44540ccfa3255e19f28af7
+
+Embedded clean-USA -> H64 IPS SHA-256:
+257033cc9fafcd37676ec519c8d10b155f9823c11e2459f6bcf40dc4bf4619f9
 
 IPS application result content1.app SHA-1:
-149ce67ae3fd25d80820e11c7eb4eb1886be66ce
+4b06f6454b96dbb6986d69622f163fb8e30a548b
 
 Production repack TMD fakesign filler:
-0x01AF
+0x021D
 
-Rebuilt WAD SHA-256:
-de70a0d822bfc822c8f0f29fc3ef185a2a5bd63cefc958d7b6b075e579e806e9
+Rebuilt H64 WAD SHA-256:
+caf4a1c75744c394799da4289a9d86dd5ef42b83dbe9e5e9e656db935dd38691
 
 Verification:
 PASS embedded IPS integrity
 PASS clean WAD identity
 PASS clean content1.app identity
-PASS IPS -> exact H63 content1.app
+PASS stock -> H64 IPS roundtrip
+PASS IPS -> exact H64 content1.app
 PASS production TMD fakesigning
 PASS 7/7 decrypted TMD content hashes
-PASS final H63 WAD SHA-256
-PASS byte-for-byte equality with tested H63 reference WAD
+PASS final H64 WAD SHA-256
+
+H64-only code change:
+- reset-safe GKI_getbuf free-list null guard
+- reset-safe GKI_getpoolbuf free-list null guard
+- 38 changed content1 bytes relative to H63
 
 End-user requirement:
-Only the original clean USA/NACE WAD plus the compiled OoTVCFixPatcher-H63.exe.
-The H63 reference WAD is not required.
+Only the original clean USA/NACE WAD plus the compiled OoTVCFixPatcher-H64.exe.
+The H64 reference WAD is not required.
