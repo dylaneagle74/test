@@ -1,0 +1,1 @@
+v5 uses the exact production H63 WAD/TMD repack algorithm. Build EXE.bat will generate the IPS payload locally if it is not already present.
