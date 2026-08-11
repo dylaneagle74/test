@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import queue
 import shutil
@@ -41,6 +42,8 @@ def root_dir() -> Path:
 
 
 def writable_root() -> Path:
+    # Payload generation is a maintainer/source-tree operation, never an end-user
+    # PyInstaller operation.
     return Path(__file__).resolve().parent
 
 
@@ -72,6 +75,11 @@ def u24(value: int) -> bytes:
 
 
 def make_ips(source: bytes, target: bytes) -> bytes:
+    """Create a simple deterministic IPS patch.
+
+    The H63 content1 image remains within the normal 24-bit IPS address range.
+    Records are split at 0xFFFF bytes and only differing spans are stored.
+    """
     out = bytearray(b"PATCH")
     limit = max(len(source), len(target))
     pos = 0
@@ -113,11 +121,17 @@ def apply_ips(source: bytes, patch: bytes) -> bytes:
         if patch[pos:pos + 3] == b"EOF":
             pos += 3
             break
+
         offset = int.from_bytes(patch[pos:pos + 3], "big")
         pos += 3
+        if pos + 2 > len(patch):
+            raise RuntimeError("H63 IPS record is truncated")
         size = int.from_bytes(patch[pos:pos + 2], "big")
         pos += 2
+
         if size == 0:
+            if pos + 3 > len(patch):
+                raise RuntimeError("H63 IPS RLE record is truncated")
             run = int.from_bytes(patch[pos:pos + 2], "big")
             value = patch[pos + 2]
             pos += 3
@@ -127,6 +141,7 @@ def apply_ips(source: bytes, patch: bytes) -> bytes:
             if len(payload) != size:
                 raise RuntimeError("H63 IPS data record is truncated")
             pos += size
+
         end = offset + len(payload)
         if end > len(out):
             out.extend(b"\0" * (end - len(out)))
@@ -147,8 +162,8 @@ def verify_tmd_contents(wad_path: Path, folder: Path) -> int:
     extract(wad_path, folder)
     blob = wad_path.read_bytes()
     sec = parse_wad(blob)
-    off, size = sec["tmd"]
-    tmd = blob[off:off + size]
+    tmd_off, tmd_size = sec["tmd"]
+    tmd = blob[tmd_off:tmd_off + tmd_size]
     count = 0
     for cid, index, _kind, expected_size, expected_sha, _ in content_records(tmd):
         path = folder / f"{index:08x}_{cid:08x}.app"
@@ -166,11 +181,23 @@ def verify_tmd_contents(wad_path: Path, folder: Path) -> int:
 
 
 def build_patch_payload(clean_wad: Path, h63_wad: Path, output_patch: Path, log) -> None:
-    log("Verifying private reference WADs...")
-    if digest_file(clean_wad, "sha256") != CLEAN_WAD_SHA256:
-        raise RuntimeError("Clean reference WAD SHA-256 does not match the supported NACE WAD")
-    if digest_file(h63_wad, "sha256") != H63_WAD_SHA256:
-        raise RuntimeError("H63 reference WAD SHA-256 does not match the tested H63 build")
+    log("Verifying clean NACE reference WAD...")
+    clean_hash = digest_file(clean_wad, "sha256")
+    if clean_hash != CLEAN_WAD_SHA256:
+        raise RuntimeError(
+            "Clean reference WAD SHA-256 does not match the supported USA/NACE WAD.\n"
+            f"Found: {clean_hash}"
+        )
+    log("PASS: clean reference WAD SHA-256")
+
+    log("Verifying tested H63 reference WAD...")
+    h63_hash = digest_file(h63_wad, "sha256")
+    if h63_hash != H63_WAD_SHA256:
+        raise RuntimeError(
+            "H63 reference WAD SHA-256 does not match the tested H63 build.\n"
+            f"Found: {h63_hash}"
+        )
+    log("PASS: H63 reference WAD SHA-256")
 
     with tempfile.TemporaryDirectory(prefix="oot-h63-payload-") as td_name:
         td = Path(td_name)
@@ -178,12 +205,16 @@ def build_patch_payload(clean_wad: Path, h63_wad: Path, output_patch: Path, log)
         h63_dir = td / "h63"
         extract(clean_wad, clean_dir)
         extract(h63_wad, h63_dir)
+
         clean_app = find_content1(clean_dir).read_bytes()
         h63_app = find_content1(h63_dir).read_bytes()
-        if hashlib.sha1(clean_app).hexdigest() != CLEAN_APP_SHA1:
-            raise RuntimeError("Clean reference content1.app SHA-1 mismatch")
-        if hashlib.sha1(h63_app).hexdigest() != H63_APP_SHA1:
-            raise RuntimeError("H63 reference content1.app SHA-1 mismatch")
+        clean_app_hash = hashlib.sha1(clean_app).hexdigest()
+        h63_app_hash = hashlib.sha1(h63_app).hexdigest()
+        if clean_app_hash != CLEAN_APP_SHA1:
+            raise RuntimeError(f"Clean reference content1.app SHA-1 mismatch: {clean_app_hash}")
+        if h63_app_hash != H63_APP_SHA1:
+            raise RuntimeError(f"H63 reference content1.app SHA-1 mismatch: {h63_app_hash}")
+        log("PASS: clean and H63 content1.app hashes")
 
         log("Generating clean-NACE -> H63 IPS payload...")
         patch = make_ips(clean_app, h63_app)
@@ -195,17 +226,15 @@ def build_patch_payload(clean_wad: Path, h63_wad: Path, output_patch: Path, log)
 
         output_patch.parent.mkdir(parents=True, exist_ok=True)
         output_patch.write_bytes(patch)
-        log(f"Payload created: {output_patch}")
+        log(f"PASS: IPS round-trip reproduces H63 byte-for-byte")
+        log(f"Payload: {output_patch}")
         log(f"Payload SHA-256: {hashlib.sha256(patch).hexdigest()}")
 
 
 def patch_wad(input_wad: Path, output_wad: Path, log) -> None:
     patch_path = root_dir() / "patches" / PATCH_NAME
     if not patch_path.is_file():
-        raise RuntimeError(
-            "The H63 patch payload is not installed. Use Maintainer -> Build H63 patch payload once, "
-            "then rebuild/distribute the patcher."
-        )
+        raise RuntimeError("This patcher build is missing its embedded H63 patch payload.")
     if not input_wad.is_file():
         raise RuntimeError("Input WAD does not exist")
     if input_wad.resolve() == output_wad.resolve():
@@ -222,13 +251,14 @@ def patch_wad(input_wad: Path, output_wad: Path, log) -> None:
         original = td / "original"
         verify = td / "verify"
         extract(input_wad, original)
+
         clean_app_path = find_content1(original)
         clean_app = clean_app_path.read_bytes()
         if hashlib.sha1(clean_app).hexdigest() != CLEAN_APP_SHA1:
             raise RuntimeError("Clean content1.app SHA-1 mismatch")
         log("PASS: clean content1.app SHA-1")
 
-        log("Applying H63 patch...")
+        log("Applying H63 emulator patch...")
         patched = apply_ips(clean_app, patch_path.read_bytes())
         if hashlib.sha1(patched).hexdigest() != H63_APP_SHA1:
             raise RuntimeError("Patched content1.app did not match H63")
@@ -237,7 +267,7 @@ def patch_wad(input_wad: Path, output_wad: Path, log) -> None:
         log("PASS: H63 content1.app SHA-1")
 
         temp_wad = td / "H63-output.wad"
-        log("Repacking WAD...")
+        log("Repacking WAD and updating TMD content hash...")
         repack(input_wad, {1: patched_app}, temp_wad)
 
         log("Decrypting rebuilt WAD for verification...")
@@ -250,7 +280,7 @@ def patch_wad(input_wad: Path, output_wad: Path, log) -> None:
         final_hash = digest_file(temp_wad, "sha256")
         if final_hash != H63_WAD_SHA256:
             raise RuntimeError(
-                "The WAD contents verify, but the finished WAD does not match the tested H63 reference. "
+                "The WAD contents verify, but the finished WAD does not match the tested H63 reference.\n"
                 f"Found SHA-256: {final_hash}"
             )
         log("PASS: exact tested H63 WAD SHA-256")
@@ -258,6 +288,55 @@ def patch_wad(input_wad: Path, output_wad: Path, log) -> None:
         output_wad.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(temp_wad, output_wad)
     log(f"COMPLETE: {output_wad}")
+
+
+def guided_payload_builder() -> int:
+    """Maintainer helper used automatically by Build EXE.bat."""
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        messagebox.showinfo(
+            APP_TITLE,
+            "The public H63 IPS payload has not been generated yet.\n\n"
+            "You will select two private files once:\n"
+            "1. the exact original USA/NACE OoT VC WAD\n"
+            "2. the tested H63 WAD\n\n"
+            "They are only read locally. The generated IPS contains only the binary delta.",
+        )
+        clean = filedialog.askopenfilename(
+            title="1 of 2 - Select exact original USA/NACE OoT VC WAD",
+            filetypes=[("Wii WAD", "*.wad"), ("All files", "*.*")],
+        )
+        if not clean:
+            return 2
+        h63 = filedialog.askopenfilename(
+            title="2 of 2 - Select tested H63 reference WAD",
+            filetypes=[("Wii WAD", "*.wad"), ("All files", "*.*")],
+        )
+        if not h63:
+            return 2
+
+        target = writable_root() / "patches" / PATCH_NAME
+        lines: list[str] = []
+
+        def log(text: str) -> None:
+            print(text, flush=True)
+            lines.append(text)
+
+        build_patch_payload(Path(clean), Path(h63), target, log)
+        messagebox.showinfo(
+            APP_TITLE,
+            "H63 patch payload generated and verified successfully.\n\n"
+            f"{target}\n\n"
+            "Build EXE.bat will now continue automatically.",
+        )
+        return 0
+    except Exception as exc:
+        traceback.print_exc()
+        messagebox.showerror(APP_TITLE, str(exc))
+        return 1
+    finally:
+        root.destroy()
 
 
 class Gui:
@@ -270,16 +349,13 @@ class Gui:
         self.output_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Select your original USA/NACE OoT Wii VC WAD.")
 
-        menubar = tk.Menu(root)
-        maint = tk.Menu(menubar, tearoff=False)
-        maint.add_command(label="Build H63 patch payload...", command=self.build_payload_dialog)
-        menubar.add_cascade(label="Maintainer", menu=maint)
-        root.config(menu=menubar)
-
         outer = ttk.Frame(root, padding=16)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text=APP_TITLE, font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        ttk.Label(outer, text="Hardware-safe H63 patch for the original North American NACE Wii VC release.").pack(anchor="w", pady=(2, 14))
+        ttk.Label(
+            outer,
+            text="Hardware-safe H63 patch for the original North American NACE Wii VC release.",
+        ).pack(anchor="w", pady=(2, 14))
 
         box = ttk.LabelFrame(outer, text="WAD files", padding=10)
         box.pack(fill="x")
@@ -305,14 +381,21 @@ class Gui:
         parent.columnconfigure(1, weight=1)
 
     def choose_input(self):
-        path = filedialog.askopenfilename(title="Select original USA/NACE OoT Wii VC WAD", filetypes=[("Wii WAD", "*.wad"), ("All files", "*.*")])
+        path = filedialog.askopenfilename(
+            title="Select original USA/NACE OoT Wii VC WAD",
+            filetypes=[("Wii WAD", "*.wad"), ("All files", "*.*")],
+        )
         if path:
             self.input_var.set(path)
             p = Path(path)
             self.output_var.set(str(p.with_name(p.stem + " - VC Fix H63.wad")))
 
     def choose_output(self):
-        path = filedialog.asksaveasfilename(title="Save patched H63 WAD", defaultextension=".wad", filetypes=[("Wii WAD", "*.wad")])
+        path = filedialog.asksaveasfilename(
+            title="Save patched H63 WAD",
+            defaultextension=".wad",
+            filetypes=[("Wii WAD", "*.wad")],
+        )
         if path:
             self.output_var.set(path)
 
@@ -325,12 +408,14 @@ class Gui:
 
     def run_worker(self, fn, success_message: str):
         self.button.configure(state="disabled")
+
         def worker():
             try:
                 fn(lambda text: self.events.put(("log", text)))
                 self.events.put(("done", success_message))
             except Exception as exc:
                 self.events.put(("error", (str(exc), traceback.format_exc())))
+
         threading.Thread(target=worker, daemon=True).start()
 
     def start_patch(self):
@@ -340,19 +425,6 @@ class Gui:
         src = Path(self.input_var.get())
         dst = Path(self.output_var.get())
         self.run_worker(lambda log: patch_wad(src, dst, log), f"Patch complete.\n\n{dst}")
-
-    def build_payload_dialog(self):
-        clean = filedialog.askopenfilename(title="Select exact clean NACE WAD", filetypes=[("Wii WAD", "*.wad")])
-        if not clean:
-            return
-        h63 = filedialog.askopenfilename(title="Select private tested H63 reference WAD", filetypes=[("Wii WAD", "*.wad")])
-        if not h63:
-            return
-        target = writable_root() / "patches" / PATCH_NAME
-        self.run_worker(
-            lambda log: build_patch_payload(Path(clean), Path(h63), target, log),
-            f"H63 patch payload created.\n\n{target}\n\nYou can now build the public EXE.",
-        )
 
     def poll(self):
         try:
@@ -375,7 +447,17 @@ class Gui:
         self.root.after(100, self.poll)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument(
+        "--build-payload",
+        action="store_true",
+        help="Interactively build/verify patches/oot-vc-usa-h63.ips from private clean + H63 WADs",
+    )
+    args = parser.parse_args(argv)
+    if args.build_payload:
+        return guided_payload_builder()
+
     root = tk.Tk()
     Gui(root)
     root.mainloop()
