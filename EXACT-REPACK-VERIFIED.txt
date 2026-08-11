@@ -1,0 +1,1 @@
+Verified locally: clean NACE WAD + H63 content1.app, repacked with the production TMD fakesign algorithm, matches H63 reference byte-for-byte. SHA-256 de70a0d822bfc822c8f0f29fc3ef185a2a5bd63cefc958d7b6b075e579e806e9.
