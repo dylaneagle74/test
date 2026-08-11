@@ -1,0 +1,1 @@
+H63 GUI patcher v4: WAD repacker now matches the H63 reference builder's 0x2D outer alignment fill bytes. AES plaintext padding remains zero. Exact final H63 WAD SHA-256 verification remains enabled.
