@@ -1,0 +1,31 @@
+OoTVCFixPatcher H63 final embedded-IPS validation
+=================================================
+
+Input clean NACE WAD SHA-256:
+6926561f8e7ed8a58f0433f577f4b3f2136a0c3e719cd97f838ae6f1202ec6e6
+
+Embedded IPS SHA-256:
+8941c141112ae8d14d9824a0f0c5bcbea0725f70883d026ef13cbc895399d2ef
+
+IPS application result content1.app SHA-1:
+149ce67ae3fd25d80820e11c7eb4eb1886be66ce
+
+Production repack TMD fakesign filler:
+0x01AF
+
+Rebuilt WAD SHA-256:
+de70a0d822bfc822c8f0f29fc3ef185a2a5bd63cefc958d7b6b075e579e806e9
+
+Verification:
+PASS embedded IPS integrity
+PASS clean WAD identity
+PASS clean content1.app identity
+PASS IPS -> exact H63 content1.app
+PASS production TMD fakesigning
+PASS 7/7 decrypted TMD content hashes
+PASS final H63 WAD SHA-256
+PASS byte-for-byte equality with tested H63 reference WAD
+
+End-user requirement:
+Only the original clean USA/NACE WAD plus the compiled OoTVCFixPatcher-H63.exe.
+The H63 reference WAD is not required.

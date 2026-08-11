@@ -1,0 +1,6 @@
+*.wad
+*.app
+build/
+dist/
+*.spec
+__pycache__/
