@@ -1,0 +1,15 @@
+H63 GUI repacker fix v5
+
+The production H63 WAD builder was reproduced locally against the exact clean NACE WAD and the exact H63 reference WAD.
+
+Critical behavior:
+- normal zero WAD alignment padding
+- standard Wii common key for the supported NACE ticket
+- every decrypted content verified against its TMD SHA-1
+- modified TMD is Trucha-fakesigned by clearing bytes 0x04..0x13F and brute-forcing the 16-bit field at 0x1E2 until SHA-1(TMD[0x140:]) begins with 0x00
+- final H63 TMD fill value resolves to 431 (0x01AF)
+
+Local exact-reproduction result:
+clean NACE WAD + H63 content1.app -> rebuilt WAD
+SHA-256: de70a0d822bfc822c8f0f29fc3ef185a2a5bd63cefc958d7b6b075e579e806e9
+Byte-for-byte equality with the tested H63 reference: PASS
